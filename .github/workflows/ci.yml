@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-ci:
+    name: API CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: api
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+
+      - name: Check Go format
+        run: |
+          unformatted_files=$(gofmt -l -s .)
+          if [ -n "$unformatted_files" ]; then
+            echo "These files are not formatted:"
+            echo "$unformatted_files"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run tests with coverage
+        run: go test -race -count=1 -v -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Show coverage
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage
+          path: api/coverage.out
+          if-no-files-found: ignore
+          retention-days: 5
+
+  ios-ci:
+    name: iOS CI
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Create iPhone simulator
+        run: |
+          simulator_id=$(xcrun simctl create "RouteTap CI" \
+            com.apple.CoreSimulator.SimDeviceType.iPhone-16 \
+            com.apple.CoreSimulator.SimRuntime.iOS-18-5)
+          echo "IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          xcrun simctl boot "$simulator_id"
+          xcrun simctl bootstatus "$simulator_id" -b
+
+      # testコマンドがアプリとテストをビルドし、両方のテストターゲットを実行する。
+      # Keychainを使うため、Simulator用のローカル署名を有効にする。
+      - name: Build and test iOS
+        run: |
+          mkdir -p ci-results
+          xcodebuild test \
+            -project ios/RouteTap.xcodeproj \
+            -scheme RouteTap \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -parallel-testing-enabled NO \
+            -enableCodeCoverage YES \
+            -resultBundlePath ci-results/RouteTap.xcresult \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY=-
+
+      - name: Upload iOS test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: ci-results/RouteTap.xcresult
+          if-no-files-found: ignore
+          retention-days: 5
