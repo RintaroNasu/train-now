@@ -5,7 +5,8 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func Register(e *echo.Echo, healthHandler *handler.HealthHandler) {
-	e.GET("/health", healthHandler.Health)
-	e.GET("/ready", healthHandler.Ready)
+func Register(e *echo.Echo, authHandler handler.AuthHandler, authMiddleware echo.MiddlewareFunc) {
+	e.POST("/signup", authHandler.Signup)
+	e.POST("/login", authHandler.Login)
+	e.GET("/me", authHandler.Me, authMiddleware)
 }
